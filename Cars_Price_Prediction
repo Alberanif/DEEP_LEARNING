@@ -1,0 +1,513 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.preprocessing import PowerTransformer
+
+df = pd.read_csv(r"C:\Users\artif\OneDrive\Documentos\DATABASES\CRAIGLISTS_CARS\vehicles.csv")
+
+df
+
+# Verificando os valores nuloes
+
+df.isnull().sum()
+
+# Aplicando a técnica IQR para corrigir os valores de carros incorretos
+
+# Calculando os quartis
+Q1 = df['price'].quantile(0.25)
+Q3 = df['price'].quantile(0.75)
+IQR = Q3 - Q1
+
+# Definindo o limite superior 
+limite_sup = Q3 + 1.5 * IQR
+
+# Filtrando os dados de preço
+df = df[df['price'] < limite_sup]
+
+# Verificando o tipo dos dados
+
+df.info()
+
+# Retirando colunas que não serão utilizadas de forma alguma
+
+df_filtrado = df.drop(['url', 'region_url', 'VIN', 'image_url', 'description', 'lat', 'long', 'posting_date', 'county', 'size'], axis=1)
+
+df_filtrado.head()
+
+# Criando uma nova coluna com a marca e o modelo do carro 
+
+df_filtrado['Carro'] = df_filtrado['manufacturer'] + ' ' + df_filtrado['model']
+
+# Completando os valores nulos dessa coluna com "outro"
+
+df_filtrado['Carro'] = df_filtrado['Carro'].fillna('Outro')
+
+df_filtrado.head()
+
+# Verificando a quantidade de carros diferentes
+
+df_filtrado['Carro'].value_counts()
+
+# Retirando todas as linhas que possuem "Outros" na coluna carro
+
+df_filtrado = df_filtrado[df_filtrado['Carro'] != 'Outro']
+
+df_filtrado.head()
+
+df_filtrado.isnull().sum()
+
+# Criando a coluna de idade do carro
+df_filtrado['age'] = 2022 - df_filtrado['year']
+
+df_filtrado.head()
+
+# Retirando a string da coluna cylinders
+df_filtrado['cylinders'] = df_filtrado['cylinders'].str.extract('(\d+)').astype(float)
+
+df_filtrado.head()
+
+# Listando as colunas com os valores ausentes de year
+df_filtrado[df_filtrado['year'].isnull()]
+
+# Dropando essas colunas
+
+df_filtrado = df_filtrado.dropna(subset=['year'])
+
+# Retirando o espaçamento e transformando em minísculo as colunas categóricas
+
+# Função que recebe uma lista com as colunas categóricas e o dataframe e retorna o dataframe com as colunas categóricas tratadas
+
+def tratar_categoricas(df, colunas):
+    
+    for coluna in colunas:
+        df[coluna] = df[coluna].str.lower().str.strip()
+
+        return df
+
+# Aplicando a função
+df_filtrado = tratar_categoricas(df_filtrado, ['condition', 'fuel', 'title_status', 'transmission', 'drive', 'size', 'type', 'paint_color', 'state', 'Carro'])
+
+df_filtrado.info()
+
+def target_encode(df, colunas, target_col, n_splits=5, smoothing=0.03):
+
+    # Calcula a média global do target
+    global_mean = df[target_col].mean()
+    
+    # Cria o objeto KFold para gerar as divisões com uma semente para reprodutibilidade
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    
+    # Para cada coluna que será target encoded
+    for coluna in colunas:
+        # Inicializa a nova coluna com o sufixo '_encoded' com NaN
+        df[coluna + '_encoded'] = np.nan
+        
+        # Itera sobre cada fold (divisão de treino e validação)
+        for train_idx, val_idx in kf.split(df):
+            # Seleciona os dados de treino e validação usando iloc com colchetes
+            train = df.iloc[train_idx]
+            val = df.iloc[val_idx]
+            
+            # Considera somente os dados não nulos na coluna para calcular as estatísticas
+            train_non_null = train[train[coluna].notnull()]
+            
+            # Calcula a média e a contagem do target para cada categoria (somente dos dados não nulos)
+            estatisticas = train_non_null.groupby(coluna)[target_col].agg(['mean', 'count'])
+            
+            # Aplica a suavização:
+            # Combina a média da categoria com a média global ponderada pela contagem e pelo parâmetro de suavização
+            estatisticas['enc'] = (estatisticas['mean'] * estatisticas['count'] + global_mean * smoothing) / (estatisticas['count'] + smoothing)
+            
+            # Cria uma máscara para identificar os valores não nulos na coluna do conjunto de validação
+            mask = val[coluna].notnull()
+            
+            # Mapeia os valores não nulos da coluna usando as estatísticas calculadas;
+            # valores nulos permanecem inalterados (NaN)
+            df.loc[val.index[mask], coluna + '_encoded'] = val.loc[mask, coluna].map(estatisticas['enc'])
+    
+    return df
+
+# Aplicando a função na coluna fuel
+df_filtrado = target_encode(df_filtrado, ['fuel', 'title_status', 'transmission', 
+                                          'condition', 'drive', 
+                                          'paint_color', 'type', 'Carro', 
+                                          'state', 'model', 'region',
+                                          'manufacturer'], 'price')
+
+# Aplicando a média global nos K-folds do conjunto de validação que não foram "vistos" no conjunto de treino
+
+def media_global(df, colunas):
+
+    for coluna in colunas:
+        df[coluna] = df[coluna].fillna(df[coluna].mean())
+
+    return df
+
+# Aplicando a função
+
+df_filtrado = media_global(df_filtrado, ['fuel_encoded', 'title_status_encoded', 'transmission_encoded', 
+                                         'condition_encoded', 'paint_color_encoded', 
+                                         'type_encoded', 'drive_encoded', 'state_encoded', 
+                                         'Carro_encoded', 'model_encoded', 'region_encoded',
+                                         'manufacturer_encoded'])
+
+df_filtrado.head()
+
+# Função para completar valores nulos com a moda
+
+def completa_moda(df, coluna):
+    moda = df[coluna].mode()[0]
+
+    df[coluna] = df[coluna].fillna(moda)
+
+    return df
+
+# Aplicando a função nas colunas fuel e title_status
+
+df_filtrado = completa_moda(df_filtrado, 'fuel')
+df_filtrado = completa_moda(df_filtrado, 'title_status')
+df_filtrado = completa_moda(df_filtrado, 'transmission')
+
+# Completando os valores faltantes de condition a partir da técnica MICE
+
+def mice(df, colunas=None, max_iter=10, sample_posterior=False):
+    # Condicional para selecionar a coluna a ser imputada ou imputar sobre todas as colunas do dataset
+    if colunas is not None:
+        # Se for passada uma única coluna (string), converte para lista
+        if isinstance(colunas, str):
+            colunas = [colunas]
+        df_impute = df[colunas]
+    else:
+        df_impute = df
+    
+    # Iniciando o iterative imputer 
+    imputer = IterativeImputer(max_iter=max_iter, sample_posterior=sample_posterior, random_state=0)
+
+    # Aplicando o imputer e transformando o resultado em um dataframe
+    imputed_array = imputer.fit_transform(df_impute)
+
+    # Convertendo o array do imputer em um dataframe
+    df_impute = pd.DataFrame(imputed_array, columns=df_impute.columns, index=df_impute.index)
+
+    # Condicional para atualizar apenas as colunas específicas caso tenham sido informadas
+    if colunas is not None:
+        df[colunas] = df_impute
+        return df
+    else:
+        df = df_impute
+        return df_impute
+
+# Aplicando a função nas colunas condition_encoded, cylinders e odometer
+
+df_filtrado = mice(df_filtrado, ['condition_encoded', 'odometer', 'type_encoded', 'paint_color_encoded', 'drive_encoded'])
+
+# Aplicando aprendizado supervisionado com o algoritmo random forest para prever variáveis discretas
+
+def random_forest(df, coluna_alvo='cylinders', colunas_preditoras=None):
+
+    # Caso a coluna preditora não seja fornecida, serão utilizadas todas as colunas do dataframe exceto a coluna alvo
+    if colunas_preditoras is None:
+        colunas_preditoras = [coluna for coluna in df.columns if coluna != coluna_alvo]
+    
+    # Dividindo os registros do dataframe para treino e teste (Com e sem valor)
+    df_treino = df[df[coluna_alvo].notnull()].copy()
+    df_faltante = df[df[coluna_alvo].isnull()].copy()
+
+    # Caso não haja valores faltantes será retornado o próprio dataset
+    if df_faltante.empty:
+        return df
+    
+    # Variável preditora e alvo
+    X_train = df_treino[colunas_preditoras]
+    y_train = df_treino[coluna_alvo].astype(int) # Forçando a conversão para inteiro
+    X_missing = df_faltante[colunas_preditoras]
+
+    # Aplicando o modelo de random forest
+    modelo = RandomForestClassifier()
+    modelo.fit(X_train, y_train)
+
+    # Predição dos valores
+    y_pred = modelo.predict(X_missing)
+
+    # Atualizando o dataframe com os valores preditos
+    df.loc[df[coluna_alvo].isnull(), coluna_alvo] = y_pred
+    return df
+
+# Aplicando a função nas colunas cylinders
+df_filtrado = random_forest(df_filtrado, 'cylinders', ['condition_encoded', 'odometer', 'type_encoded', 'drive_encoded', 'Carro_encoded'])
+
+df_filtrado.isnull().sum()
+
+df_filtrado['cylinders'].value_counts()
+
+df_filtrado['paint_color'].value_counts()
+
+# Removendo colunas que já foram codificadas e tratadas
+
+df_limpo = df_filtrado.drop(['condition', 'fuel', 'state', 'Carro', 'transmission', 'manufacturer', 'model', 'title_status', 'drive', 'type', 'paint_color', 'region', 'id'], axis=1)
+
+df_limpo.isnull().sum()
+
+# Criar matriz de correlação
+correlation_matrix = df_limpo.corr()
+
+# Plotar heatmap da matriz de correlação
+plt.figure(figsize=(12, 10))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5)
+plt.title('Matriz de Correlação das Variáveis')
+plt.tight_layout()
+plt.show()
+
+# Verificando correlações mais fortes com o preço
+price_correlations = correlation_matrix['price'].sort_values(ascending=False)
+print("Correlações com o preço:")
+print(price_correlations)
+
+# Selecionar apenas colunas numéricas
+numeric_columns = df_limpo.select_dtypes(include=[np.number]).columns
+
+# Criar múltiplos boxplots
+plt.figure(figsize=(15, 10))
+
+# Definir número de linhas e colunas para o grid de subplots
+n_cols = 3
+n_rows = (len(numeric_columns) + 2) // n_cols  # Arredonda para cima
+
+# Criar subplots
+for i, col in enumerate(numeric_columns):
+    if col != 'price':  # Exclui a coluna price para criar um boxplot separado
+        plt.subplot(n_rows, n_cols, i + 1)
+        sns.boxplot(y=df_limpo[col], color='skyblue')
+        plt.title(f'Boxplot de {col}')
+        plt.tight_layout()
+
+# Criar boxplot separado para preço com escala diferente
+plt.figure(figsize=(8, 6))
+sns.boxplot(y=df_limpo['price'], color='coral')
+plt.title('Boxplot de Preço')
+plt.tight_layout()
+
+plt.show()
+
+# Removendo os outliers
+
+df_limpo = df_limpo[df_limpo['age'] < 20]
+
+df_limpo = df_limpo[(df_limpo['cylinders']) > 3 & (df_limpo['cylinders'] < 12) ]
+
+df_limpo['price'].value_counts()
+
+# Retirando anúncios com preço igual a 0
+
+df_limpo = df_limpo[df_limpo['price'] > 3000]
+
+# Retirando outliers de odometer com as condições devidamente parenthesadas
+df_limpo = df_limpo[(df_limpo['odometer'] > 1000) & (df_limpo['odometer'] < 200000)]
+
+df_limpo['price'].max()
+
+# Encontrando o registro com o maior preço no dataset
+maior_preco_idx = df_limpo['price'].idxmax()
+print(f"O maior preço no dataset é: ${df_limpo.loc[maior_preco_idx, 'price']:,}")
+print("\nDetalhes do veículo com maior preço:")
+for coluna, valor in df_limpo.loc[maior_preco_idx].items():
+    print(f"{coluna}: {valor}")
+
+# Aplicando a técnica IQR na coluna title_status
+
+q1 = df_limpo['title_status_encoded'].quantile(0.25)
+q3 = df_limpo['title_status_encoded'].quantile(0.75)
+iqr = q3 - q1
+
+limite_inferior = q1 - 1.5 * iqr
+limite_superior = q3 + 1.5 * iqr
+
+df_limpo = df_limpo[(df_limpo['title_status_encoded'] > limite_inferior) & (df_limpo['title_status_encoded'] < limite_superior)]
+
+# Selecionar apenas colunas numéricas
+numeric_columns = df_limpo.select_dtypes(include=[np.number]).columns
+
+# Criar múltiplos boxplots
+plt.figure(figsize=(15, 10))
+
+# Definir número de linhas e colunas para o grid de subplots
+n_cols = 3
+n_rows = (len(numeric_columns) + 2) // n_cols  # Arredonda para cima
+
+# Criar subplots
+for i, col in enumerate(numeric_columns):
+    if col != 'price':  # Exclui a coluna price para criar um boxplot separado
+        plt.subplot(n_rows, n_cols, i + 1)
+        sns.boxplot(y=df_limpo[col], color='skyblue')
+        plt.title(f'Boxplot de {col}')
+        plt.tight_layout()
+
+# Criar boxplot separado para preço com escala diferente
+plt.figure(figsize=(8, 6))
+sns.boxplot(y=df_limpo['price'], color='coral')
+plt.title('Boxplot de Preço')
+plt.tight_layout()
+
+plt.show()
+
+# Distribuição dos dados antes da transformação
+
+plt.figure(figsize=(20, 25))
+
+# Obter todas as colunas disponíveis no dataframe
+columns = df_limpo.columns
+
+# Criar um subplot para cada coluna
+for i, col in enumerate(columns):
+    plt.subplot(6, 3, i+1)  # 6 linhas, 3 colunas
+    
+    # Ajustar o número de bins com base na variedade dos dados
+    bins = 30 if df_limpo[col].nunique() > 30 else df_limpo[col].nunique()
+    
+    # Criar o histograma
+    plt.hist(df_limpo[col], bins=bins, color='skyblue', edgecolor='black', alpha=0.7)
+    
+    # Adicionar título e rótulos
+    plt.title(f'Distribuição de {col}')
+    plt.xlabel(col)
+    plt.ylabel('Frequência')
+    
+    # Adicionar linha de média
+    mean_val = df_limpo[col].mean()
+    plt.axvline(mean_val, color='r', linestyle='dashed', linewidth=1.5, label=f'Média: {mean_val:.2f}')
+    
+    # Formatar eixos para valores grandes
+    if col == 'price' or '_encoded' in col:
+        plt.ticklabel_format(style='plain', axis='x')
+    
+    plt.legend()
+    plt.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# Estatísticas descritivas de cada coluna
+stats_df = df_limpo.describe().T
+stats_df['skew'] = df_limpo.skew()
+stats_df['kurtosis'] = df_limpo.kurtosis()
+print(stats_df)
+
+# Normalizando os dados enviesados
+def power_transformer(df, coluna):
+
+    # Inicializando o power transformer
+    transformer = PowerTransformer(method='yeo-johnson')
+
+    # Aplicando a transformação às colunas selecionadas
+    df[coluna] = transformer.fit_transform(df[[coluna]])
+
+    return df
+
+# Aplicando a função
+
+df_limpo = power_transformer(df_limpo, 'Carro_encoded')
+df_limpo = power_transformer(df_limpo, 'model_encoded')
+df_limpo = power_transformer(df_limpo, 'age')
+df_limpo = power_transformer(df_limpo, 'odometer')
+
+# Verificando a distribuição dos dados após a transformação
+
+plt.figure(figsize=(20, 25))
+
+# Obter todas as colunas disponíveis no dataframe
+columns = df_limpo.columns
+
+# Criar um subplot para cada coluna
+for i, col in enumerate(columns):
+    plt.subplot(6, 3, i+1)  # 6 linhas, 3 colunas
+    
+    # Ajustar o número de bins com base na variedade dos dados
+    bins = 30 if df_limpo[col].nunique() > 30 else df_limpo[col].nunique()
+    
+    # Criar o histograma
+    plt.hist(df_limpo[col], bins=bins, color='skyblue', edgecolor='black', alpha=0.7)
+    
+    # Adicionar título e rótulos
+    plt.title(f'Distribuição de {col}')
+    plt.xlabel(col)
+    plt.ylabel('Frequência')
+    
+    # Adicionar linha de média
+    mean_val = df_limpo[col].mean()
+    plt.axvline(mean_val, color='r', linestyle='dashed', linewidth=1.5, label=f'Média: {mean_val:.2f}')
+    
+    # Formatar eixos para valores grandes
+    if col == 'price' or '_encoded' in col:
+        plt.ticklabel_format(style='plain', axis='x')
+    
+    plt.legend()
+    plt.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# Estatísticas descritivas de cada coluna
+stats_df = df_limpo.describe().T
+stats_df['skew'] = df_limpo.skew()
+stats_df['kurtosis'] = df_limpo.kurtosis()
+print(stats_df)
+
+# Separando as features e o target
+
+X = df_limpo.drop('price', axis=1)
+y = df_limpo['price']
+
+# Divisão do dataframe em treino e teste
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+# Definindo o modelo e a sua configuração 
+
+model = XGBRegressor(objective='reg:squarederror', tree_method='gpu_hist')
+
+# grade de parâmetros para realizar a otimização do algoritmo
+
+param_grid = {
+    'n_estimators': [200, 1000],
+    'max_depth': [3, 5, 7],
+    'learning_rate': [0.01, 0.1],
+    'subsample': [0.8, 1.0],
+    'colsample_bytree': [0.8, 1.0]
+}
+
+# Configurando o GridSearchCV
+
+grid_search = GridSearchCV(estimator=model,
+                           param_grid=param_grid,
+                           scoring='neg_root_mean_squared_error',
+                           cv=3,
+                           verbose=1,
+                           n_jobs=-1
+    )
+
+# Busca pelos melhores parâmetros
+grid_search.fit(X_train, y_train)
+melhor_modelo = grid_search.best_estimator_
+
+print(f'Melhores parâmetros: {grid_search.best_params_}')
+
+# Predição no conjunto de teste
+y_pred = melhor_modelo.predict(X_test)
+
+# Métricas de avaliação
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print("RMSE:", rmse)
+print("MAE:", mae)
+print("R²:", r2)
+
+df_limpo['price'].mean()
